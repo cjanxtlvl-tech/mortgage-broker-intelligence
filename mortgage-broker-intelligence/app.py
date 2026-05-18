@@ -173,6 +173,26 @@ def _lei_record_url(lei_value: str) -> str:
     return f"https://search.gleif.org/#/record/{lei}"
 
 
+def _company_info_columns() -> list[str]:
+    return [
+        "state",
+        "original_company_name",
+        "company_name",
+        "lei_lookup_url",
+        "gleif_legal_name",
+        "gleif_entity_status",
+        "gleif_registration_status",
+        "gleif_jurisdiction",
+        "gleif_legal_address",
+        "gleif_headquarters_address",
+        "gleif_last_update",
+        "gleif_next_renewal_date",
+        "gleif_managing_lou",
+        "total_originated_loans",
+        "dominance_score",
+    ]
+
+
 def _download_section(full_df: pd.DataFrame, settings_output_path: Path, year: int, states: list[str]) -> None:
     export_paths = export_all(full_df, settings_output_path)
     top10_df = top10_per_state(full_df)
@@ -356,26 +376,31 @@ def main() -> None:
             lookup_display_df = lookup_df.copy()
             lookup_display_df["lei_lookup_url"] = lookup_display_df["lei"].map(_lei_record_url)
             st.caption(f"Lookup matches: {len(lookup_df)}")
+            if enrich_company_names:
+                st.markdown("**Company info**")
+                st.caption("HMDA names are preserved in original_company_name and GLEIF metadata fills the company info fields.")
             st.dataframe(
-                lookup_display_df[
-                    [
-                        "state",
-                        "company_name",
-                        "lei_lookup_url",
-                        "total_originated_loans",
-                        "dominance_score",
-                    ]
-                ],
+                lookup_display_df[_company_info_columns()],
                 use_container_width=True,
                 hide_index=True,
                 column_config={
                     "state": "State",
+                    "original_company_name": "Original HMDA Company",
                     "company_name": "Company",
                     "lei_lookup_url": st.column_config.LinkColumn(
                         "LEI",
                         help="Click to open LEI record in GLEIF",
                         display_text=r".*/record/(.*)$",
                     ),
+                    "gleif_legal_name": "GLEIF Legal Name",
+                    "gleif_entity_status": "Entity Status",
+                    "gleif_registration_status": "Registration Status",
+                    "gleif_jurisdiction": "Jurisdiction",
+                    "gleif_legal_address": "Legal Address",
+                    "gleif_headquarters_address": "Headquarters Address",
+                    "gleif_last_update": "Last Update",
+                    "gleif_next_renewal_date": "Next Renewal",
+                    "gleif_managing_lou": "Managing LOU",
                     "total_originated_loans": "Originated Loans",
                     "dominance_score": "Dominance Score",
                 },
