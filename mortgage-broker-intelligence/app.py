@@ -138,13 +138,22 @@ def _apply_sector_filter(df: pd.DataFrame, selected_sector: str) -> pd.DataFrame
     return df[df[column_name] > 0].reset_index(drop=True)
 
 
-def _lookup_matches(df: pd.DataFrame, lei_query: str, company_query: str) -> pd.DataFrame:
+def _lookup_matches(
+    df: pd.DataFrame,
+    lei_query: str,
+    company_query: str,
+    exact_lei_match: bool,
+) -> pd.DataFrame:
     if df.empty:
         return df
 
     matched = df.copy()
     if lei_query.strip():
-        lei_mask = matched["lei"].astype(str).str.contains(lei_query.strip(), case=False, na=False)
+        if exact_lei_match:
+            normalized_lei = lei_query.strip().upper()
+            lei_mask = matched["lei"].astype(str).str.strip().str.upper() == normalized_lei
+        else:
+            lei_mask = matched["lei"].astype(str).str.contains(lei_query.strip(), case=False, na=False)
         matched = matched[lei_mask]
 
     if company_query.strip():
@@ -281,9 +290,15 @@ def main() -> None:
         company_lookup = lookup_col_2.text_input(
             "Find by Company Name", value="", placeholder="e.g., Rocket Mortgage"
         )
+        exact_lei_match = st.checkbox("Exact LEI match only", value=False)
 
         if lei_lookup.strip() or company_lookup.strip():
-            lookup_df = _lookup_matches(filtered_ranked_df, lei_lookup, company_lookup)
+            lookup_df = _lookup_matches(
+                filtered_ranked_df,
+                lei_lookup,
+                company_lookup,
+                exact_lei_match,
+            )
             st.caption(f"Lookup matches: {len(lookup_df)}")
             st.dataframe(
                 lookup_df[["state", "company_name", "lei", "total_originated_loans", "dominance_score"]],
