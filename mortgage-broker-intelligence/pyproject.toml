@@ -12,6 +12,7 @@ dependencies = [
   "streamlit",
   "pandas",
   "requests",
+  "beautifulsoup4",
   "python-dotenv",
   "numpy",
 ]

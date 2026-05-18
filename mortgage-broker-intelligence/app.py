@@ -18,6 +18,7 @@ from src.exporters import export_all
 from src.hmda_client import HmdaApiError, HmdaClient
 from src.lei_client import enrich_dataframe_with_lei, get_lei_record
 from src.main import build_ranked_dataframe
+from src.website_scanner import scan_website_for_broker_signals
 from src.utils import dataframe_to_csv_bytes, parse_state_list, to_download_name_prefix, top10_per_state
 
 logging.basicConfig(
@@ -282,6 +283,46 @@ def _download_section(full_df: pd.DataFrame, settings_output_path: Path, year: i
     )
 
 
+def _apply_website_scanning(df: pd.DataFrame, *, max_scans: int) -> pd.DataFrame:
+    enriched = df.copy()
+    scan_columns = {
+        "website_broker_signal_score": 0,
+        "website_lender_signal_score": 0,
+        "matched_broker_phrases": "",
+        "matched_lender_phrases": "",
+        "scanned_pages": "",
+        "scan_error": "",
+    }
+    for column_name, default_value in scan_columns.items():
+        if column_name not in enriched.columns:
+            enriched[column_name] = default_value
+
+    if enriched.empty or "website" not in enriched.columns:
+        return enriched
+
+    websites = (
+        enriched["website"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+    )
+    unique_websites = [value for value in websites.unique().tolist() if value]
+    if not unique_websites:
+        return enriched
+
+    for website in unique_websites[:max_scans]:
+        scan_result = scan_website_for_broker_signals(website)
+        mask = websites == website
+        enriched.loc[mask, "website_broker_signal_score"] = scan_result.get("website_broker_signal_score", 0)
+        enriched.loc[mask, "website_lender_signal_score"] = scan_result.get("website_lender_signal_score", 0)
+        enriched.loc[mask, "matched_broker_phrases"] = "; ".join(scan_result.get("matched_broker_phrases", []))
+        enriched.loc[mask, "matched_lender_phrases"] = "; ".join(scan_result.get("matched_lender_phrases", []))
+        enriched.loc[mask, "scanned_pages"] = " | ".join(scan_result.get("scanned_pages", []))
+        enriched.loc[mask, "scan_error"] = scan_result.get("scan_error", "")
+
+    return enriched
+
+
 def main() -> None:
     st.set_page_config(page_title="Mortgage Broker Intelligence", layout="wide")
 
@@ -322,6 +363,19 @@ def main() -> None:
         value=False,
         help="Add lightweight heuristic broker-vs-lender labels and scores.",
     )
+    enable_website_scanning = st.sidebar.checkbox(
+        "Scan websites for broker/lender language",
+        value=False,
+        help="Scan company websites for broker/lender keyword signals and append website scan columns.",
+    )
+    max_website_scans = st.sidebar.number_input(
+        "Max website scans",
+        min_value=1,
+        max_value=500,
+        value=25,
+        step=5,
+        help="Limit how many unique websites are scanned in a single run.",
+    )
     max_lei_lookups = st.sidebar.number_input(
         "Max LEI lookups",
         min_value=1,
@@ -358,6 +412,10 @@ def main() -> None:
     if enrich_company_names:
         st.warning(
             "LEI enrichment can take longer on large datasets because the app queries GLEIF for each unique LEI."
+        )
+    if enable_website_scanning:
+        st.warning(
+            "Website scanning can be slow because pages are fetched over the network and parsed for keyword signals."
         )
 
     run_clicked = st.button("Run analysis", type="primary")
@@ -462,6 +520,12 @@ def main() -> None:
                 )
                 classification_bar.progress(1.0)
                 classification_placeholder.success("Broker/lender classification complete.")
+
+            if enable_website_scanning:
+                ranked_df = _apply_website_scanning(
+                    ranked_df,
+                    max_scans=int(max_website_scans),
+                )
 
             filtered_ranked_df = _apply_sector_filter(ranked_df, sector_filter)
 
