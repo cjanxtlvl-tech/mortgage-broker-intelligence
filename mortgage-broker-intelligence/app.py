@@ -10,6 +10,7 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
+from streamlit.errors import StreamlitSecretNotFoundError
 
 from src.config import load_settings
 from src.exporters import export_all
@@ -26,10 +27,13 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _check_password() -> bool:
-    load_dotenv()
+    # Support local development via .env while keeping Streamlit secrets as primary.
+    load_dotenv(dotenv_path=Path(__file__).resolve().with_name(".env"))
+    try:
+        app_password_raw = st.secrets.get("APP_PASSWORD") or os.getenv("APP_PASSWORD")
+    except StreamlitSecretNotFoundError:
+        app_password_raw = os.getenv("APP_PASSWORD")
 
-    # Prefer Streamlit secrets (Cloud/local secrets.toml), fallback to .env for local dev.
-    app_password_raw = st.secrets.get("APP_PASSWORD") or os.getenv("APP_PASSWORD")
     app_password = str(app_password_raw) if app_password_raw else ""
     if not app_password:
         st.error(
