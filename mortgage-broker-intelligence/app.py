@@ -1,0 +1,241 @@
+from __future__ import annotations
+
+import hmac
+import logging
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+import streamlit as st
+
+from src.config import load_settings
+from src.exporters import export_all
+from src.hmda_client import HmdaApiError, HmdaClient
+from src.main import build_ranked_dataframe
+from src.utils import dataframe_to_csv_bytes, parse_state_list, to_download_name_prefix, top10_per_state
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+LOGGER = logging.getLogger(__name__)
+
+
+def _check_password() -> bool:
+    app_password = st.secrets.get("APP_PASSWORD")
+    if not app_password:
+        st.error("APP_PASSWORD is not configured in Streamlit secrets.")
+        st.stop()
+
+    if st.session_state.get("authenticated"):
+        return True
+
+    st.title("Mortgage Broker Intelligence")
+    st.subheader("Internal Access")
+    password_input = st.text_input("Enter password", type="password")
+    submitted = st.button("Unlock")
+
+    if submitted:
+        if hmac.compare_digest(password_input, app_password):
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("Incorrect password.")
+
+    return False
+
+
+def _load_source_data(
+    source_mode: str,
+    year: int,
+    target_states: list[str],
+    uploaded_file: Any,
+) -> tuple[pd.DataFrame, str]:
+    settings = load_settings()
+    client = HmdaClient(settings)
+
+    if source_mode == "API":
+        if not target_states:
+            raise ValueError("API mode requires at least one target state.")
+        df = client.download_csv(year=year, states=target_states, actions_taken="1")
+        source_label = f"API ({year}, {','.join(target_states)})"
+        return df, source_label
+
+    if uploaded_file is None:
+        raise ValueError("Upload CSV mode requires a CSV file.")
+
+    df = pd.read_csv(uploaded_file, low_memory=False)
+    source_label = f"Upload ({uploaded_file.name})"
+    return df, source_label
+
+
+def _state_metric_cards(df: pd.DataFrame) -> None:
+    top_state_rows = top10_per_state(df).groupby("state", as_index=False).first()
+    if top_state_rows.empty:
+        return
+
+    st.subheader("Top 10 Summary Cards")
+    cols = st.columns(min(4, len(top_state_rows)))
+    for idx, row in top_state_rows.iterrows():
+        col = cols[idx % len(cols)]
+        col.metric(
+            label=f"{row['state']} top lender",
+            value=str(row["company_name"]),
+            delta=f"Score {row['dominance_score']}",
+        )
+
+
+def _charts(df: pd.DataFrame) -> None:
+    st.subheader("Top Originated Volume")
+    volume_chart_df = (
+        df.sort_values("total_originated_volume", ascending=False)
+        .head(20)
+        .set_index("company_name")[["total_originated_volume"]]
+    )
+    st.bar_chart(volume_chart_df)
+
+    st.subheader("FHA-Heavy Lenders")
+    fha_chart_df = (
+        df.sort_values("fha_share", ascending=False)
+        .head(20)
+        .set_index("company_name")[["fha_share"]]
+    )
+    st.bar_chart(fha_chart_df)
+
+    st.subheader("Purchase-Heavy Lenders")
+    purchase_chart_df = (
+        df.sort_values("purchase_share", ascending=False)
+        .head(20)
+        .set_index("company_name")[["purchase_share"]]
+    )
+    st.bar_chart(purchase_chart_df)
+
+
+def _download_section(full_df: pd.DataFrame, settings_output_path: Path, year: int, states: list[str]) -> None:
+    export_paths = export_all(full_df, settings_output_path)
+    top10_df = top10_per_state(full_df)
+    file_prefix = to_download_name_prefix(states, year)
+
+    st.subheader("Downloadable Exports")
+    st.download_button(
+        label="Download Full Ranked CSV",
+        data=dataframe_to_csv_bytes(full_df),
+        file_name=f"{file_prefix}_full.csv",
+        mime="text/csv",
+    )
+    st.download_button(
+        label="Download Top 10 By State CSV",
+        data=dataframe_to_csv_bytes(top10_df),
+        file_name=f"{file_prefix}_top10_by_state.csv",
+        mime="text/csv",
+    )
+
+    for state, state_df in full_df.groupby("state"):
+        st.download_button(
+            label=f"Download {state} CSV",
+            data=dataframe_to_csv_bytes(state_df),
+            file_name=f"{file_prefix}_{state}.csv",
+            mime="text/csv",
+            key=f"download-{state}",
+        )
+
+    by_state_count = len(export_paths["by_state"])
+    st.caption(
+        "Saved exports to data/processed: "
+        f"full, top10 summary, and {by_state_count} state files."
+    )
+
+
+def main() -> None:
+    st.set_page_config(page_title="Mortgage Broker Intelligence", layout="wide")
+
+    if not _check_password():
+        return
+
+    default_settings = load_settings()
+
+    st.sidebar.header("Analysis Settings")
+    selected_year = st.sidebar.number_input(
+        "HMDA year",
+        min_value=2018,
+        max_value=2100,
+        value=default_settings.hmda_year,
+        step=1,
+    )
+    target_states_input = st.sidebar.text_input(
+        "Target states (comma-separated)",
+        value=",".join(default_settings.target_states),
+    )
+    exclude_states_input = st.sidebar.text_input(
+        "Exclude licensed states (comma-separated)",
+        value=",".join(default_settings.exclude_licensed_states),
+    )
+    min_loans = st.sidebar.slider(
+        "Minimum originated loans",
+        min_value=1,
+        max_value=1000,
+        value=default_settings.min_originated_loans,
+    )
+    source_mode = st.sidebar.selectbox("Source mode", options=["API", "Upload CSV"])
+    uploaded_file = None
+    if source_mode == "Upload CSV":
+        uploaded_file = st.sidebar.file_uploader("Upload HMDA CSV", type=["csv"])
+
+    st.title("Mortgage Broker Intelligence")
+    st.write(
+        "Identify high-volume mortgage companies by state using public HMDA/CFPB data. "
+        "This dashboard is designed for lightweight internal analysis and export workflows."
+    )
+
+    run_clicked = st.button("Run analysis", type="primary")
+    if not run_clicked:
+        return
+
+    target_states = parse_state_list(target_states_input)
+    exclude_states = parse_state_list(exclude_states_input)
+    runtime_settings = replace(
+        default_settings,
+        hmda_year=int(selected_year),
+        target_states=target_states,
+        exclude_licensed_states=exclude_states,
+        min_originated_loans=min_loans,
+    )
+
+    try:
+        with st.spinner("Loading HMDA data and building rankings..."):
+            raw_df, source_label = _load_source_data(
+                source_mode=source_mode,
+                year=int(selected_year),
+                target_states=target_states,
+                uploaded_file=uploaded_file,
+            )
+            ranked_df = build_ranked_dataframe(raw_df=raw_df, settings=runtime_settings)
+
+        st.success(f"Analysis complete using source: {source_label}")
+        st.write(
+            f"Ranked {len(ranked_df)} companies across {ranked_df['state'].nunique() if not ranked_df.empty else 0} states."
+        )
+
+        top10_df = top10_per_state(ranked_df)
+        st.subheader("Top Mortgage Companies By State")
+        st.dataframe(top10_df, use_container_width=True)
+
+        st.subheader("Full Ranked Output")
+        st.dataframe(ranked_df, use_container_width=True)
+
+        _state_metric_cards(ranked_df)
+        _charts(ranked_df)
+        _download_section(
+            full_df=ranked_df,
+            settings_output_path=runtime_settings.output_path,
+            year=int(selected_year),
+            states=target_states,
+        )
+    except (ValueError, HmdaApiError, FileNotFoundError, pd.errors.ParserError) as exc:
+        LOGGER.exception("Analysis failed")
+        st.error(f"Analysis failed: {exc}")
+
+
+if __name__ == "__main__":
+    main()

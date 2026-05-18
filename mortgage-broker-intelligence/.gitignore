@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local environment
+.env
+.streamlit/secrets.toml
+
+# Build and packaging
+build/
+dist/
+*.egg-info/
+
+# Data artifacts
+data/raw/*.csv
+data/processed/*.csv
+data/processed/by_state/*.csv
+
+# Keep directories tracked
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/processed/by_state/.gitkeep
