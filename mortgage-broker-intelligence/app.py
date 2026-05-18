@@ -465,15 +465,17 @@ def main() -> None:
 
             filtered_ranked_df = _apply_sector_filter(ranked_df, sector_filter)
 
-        # Add broker/lender filter if classification is enabled and column exists
-        broker_lender_filter = None
-        if enable_broker_lender_classification and "classification_label" in filtered_ranked_df.columns:
-            broker_lender_filter = st.radio(
-                "Show:",
-                options=["All", "Probable Broker Only", "Probable Lender Only"],
-                index=0,
-                help="Filter results to show only probable brokers, probable lenders, or all."
-            )
+        # Always show broker/lender filter, but disable options if not available
+        broker_lender_options = ["All", "Probable Broker Only", "Probable Lender Only"]
+        broker_lender_disabled = not (enable_broker_lender_classification and "classification_label" in filtered_ranked_df.columns)
+        broker_lender_filter = st.radio(
+            "Show:",
+            options=broker_lender_options,
+            index=0,
+            help="Filter results to show only probable brokers, probable lenders, or all.",
+            disabled=broker_lender_disabled
+        )
+        if not broker_lender_disabled:
             if broker_lender_filter == "Probable Broker Only":
                 filtered_ranked_df = filtered_ranked_df[
                     filtered_ranked_df["classification_label"].str.lower() == "broker"
