@@ -12,6 +12,13 @@ import streamlit as st
 from dotenv import load_dotenv
 from streamlit.errors import StreamlitSecretNotFoundError
 
+from src.cache_manager import (
+    LEI_CACHE_PATH,
+    NMLS_CACHE_PATH,
+    WEBSITE_SCAN_CACHE_PATH,
+    load_cache,
+    save_cache,
+)
 from src.config import load_settings
 from src.classifier import classify_dataframe
 from src.exporters import export_all
@@ -26,6 +33,29 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 LOGGER = logging.getLogger(__name__)
+
+
+@st.cache_data(ttl=60 * 60, show_spinner=False)
+def _cached_hmda_download(year: int, target_states: tuple[str, ...]) -> pd.DataFrame:
+    settings = load_settings()
+    client = HmdaClient(settings)
+    return client.download_csv(year=year, states=list(target_states), actions_taken="1")
+
+
+@st.cache_data(ttl=24 * 60 * 60, show_spinner=False)
+def _cached_lei_lookup(lei: str) -> dict[str, str]:
+    return get_lei_record(lei)
+
+
+@st.cache_data(ttl=24 * 60 * 60, show_spinner=False)
+def _cached_website_scan(url: str) -> dict:
+    return scan_website_for_broker_signals(url)
+
+
+def _initialize_cache_files() -> None:
+    for cache_path in (WEBSITE_SCAN_CACHE_PATH, LEI_CACHE_PATH, NMLS_CACHE_PATH):
+        cache_data = load_cache(cache_path)
+        save_cache(cache_path, cache_data)
 
 
 def _check_password() -> bool:
@@ -69,13 +99,13 @@ def _load_source_data(
     target_states: list[str],
     uploaded_file: Any,
 ) -> tuple[pd.DataFrame, str]:
-    settings = load_settings()
-    client = HmdaClient(settings)
-
     if source_mode == "API":
         if not target_states:
             raise ValueError("API mode requires at least one target state.")
-        df = client.download_csv(year=year, states=target_states, actions_taken="1")
+        normalized_states = tuple(
+            state.strip().upper() for state in target_states if state and state.strip()
+        )
+        df = _cached_hmda_download(year=year, target_states=normalized_states).copy()
         source_label = f"API ({year}, {','.join(target_states)})"
         return df, source_label
 
@@ -220,7 +250,7 @@ def _force_enrich_lookup_matches(df: pd.DataFrame, *, max_forced_lookups: int = 
         return forced
 
     for lei_value in normalized_leis[:max_forced_lookups]:
-        record = get_lei_record(lei_value)
+        record = _cached_lei_lookup(lei_value)
         if not any(record.values()):
             continue
 
@@ -311,7 +341,7 @@ def _apply_website_scanning(df: pd.DataFrame, *, max_scans: int) -> pd.DataFrame
         return enriched
 
     for website in unique_websites[:max_scans]:
-        scan_result = scan_website_for_broker_signals(website)
+        scan_result = _cached_website_scan(website)
         mask = websites == website
         enriched.loc[mask, "website_broker_signal_score"] = scan_result.get("website_broker_signal_score", 0)
         enriched.loc[mask, "website_lender_signal_score"] = scan_result.get("website_lender_signal_score", 0)
@@ -328,6 +358,8 @@ def main() -> None:
 
     if not _check_password():
         return
+
+    _initialize_cache_files()
 
     default_settings = load_settings()
 

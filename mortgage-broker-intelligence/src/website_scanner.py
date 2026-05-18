@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from urllib.parse import urljoin, urlparse, urlunparse
@@ -8,10 +7,19 @@ from urllib.parse import urljoin, urlparse, urlunparse
 import requests
 from bs4 import BeautifulSoup
 
+from src.cache_manager import (
+    WEBSITE_SCAN_CACHE_PATH,
+    get_cached_result,
+    load_cache,
+    save_cache,
+    set_cached_result,
+)
+
 LOGGER = logging.getLogger(__name__)
 
-CACHE_PATH = Path("data/processed/website_scan_cache.json")
+CACHE_PATH = WEBSITE_SCAN_CACHE_PATH
 REQUEST_TIMEOUT_SECONDS = 10
+DEFAULT_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 USER_AGENT = (
     "MortgageBrokerIntelligenceBot/1.0 "
     "(+https://github.com/cjanxtlvl-tech/mortgage-broker-intelligence; contact=admin)"
@@ -83,26 +91,6 @@ def _cache_key(url: str) -> str:
     return base.rstrip("/")
 
 
-def _load_cache(cache_path: Path = CACHE_PATH) -> dict[str, dict]:
-    try:
-        if not cache_path.exists():
-            return {}
-        loaded = json.loads(cache_path.read_text(encoding="utf-8"))
-        if isinstance(loaded, dict):
-            return loaded
-    except (OSError, json.JSONDecodeError):
-        LOGGER.warning("Unable to read website scan cache at %s", cache_path)
-    return {}
-
-
-def _save_cache(cache: dict[str, dict], cache_path: Path = CACHE_PATH) -> None:
-    try:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
-    except OSError:
-        LOGGER.warning("Unable to write website scan cache at %s", cache_path)
-
-
 def _extract_visible_text(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
     for tag in soup(["script", "style", "noscript"]):
@@ -119,9 +107,9 @@ def scan_website_for_broker_signals(url: str) -> dict:
     if not normalized_url:
         return _default_scan_result(error="invalid or empty url")
 
-    cache = _load_cache()
+    cache = load_cache(CACHE_PATH)
     key = _cache_key(normalized_url)
-    cached = cache.get(key)
+    cached = get_cached_result(cache, key, ttl_seconds=DEFAULT_CACHE_TTL_SECONDS)
     if isinstance(cached, dict):
         return cached
 
@@ -175,6 +163,6 @@ def scan_website_for_broker_signals(url: str) -> dict:
     except Exception as exc:  # Defensive fallback to avoid breaking app flow
         result = _default_scan_result(error=str(exc))
 
-    cache[key] = result
-    _save_cache(cache)
+    set_cached_result(cache, key, result)
+    save_cache(CACHE_PATH, cache)
     return result

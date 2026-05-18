@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import time
 from pathlib import Path
@@ -11,6 +10,14 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from src.cache_manager import (
+    LEI_CACHE_PATH,
+    get_cached_result,
+    load_cache,
+    save_cache,
+    set_cached_result,
+)
+
 LOGGER = logging.getLogger(__name__)
 
 GLEIF_BASE_URL = "https://api.gleif.org/api/v1/lei-records"
@@ -18,11 +25,12 @@ DEFAULT_CACHE_PATH = Path("data/processed/lei_cache.json")
 DEFAULT_TIMEOUT_SECONDS = 15
 DEFAULT_SLEEP_SECONDS = 0.2
 DEFAULT_MAX_LOOKUPS = 250
+DEFAULT_CACHE_TTL_SECONDS = 90 * 24 * 60 * 60
 
-_MEM_CACHE: dict[str, dict[str, str]] = {}
+_MEM_CACHE: dict[str, Any] = {}
 _CACHE_LOADED = False
 _CACHE_LOADED_FOR: Path | None = None
-_ACTIVE_CACHE_PATH: Path = DEFAULT_CACHE_PATH
+_ACTIVE_CACHE_PATH: Path = LEI_CACHE_PATH
 _SESSION: requests.Session | None = None
 
 
@@ -101,27 +109,13 @@ def _load_session() -> requests.Session:
     return _SESSION
 
 
-def _load_cache(cache_path: Path) -> dict[str, dict[str, str]]:
+def _load_cache(cache_path: Path) -> dict[str, Any]:
     global _CACHE_LOADED, _CACHE_LOADED_FOR, _MEM_CACHE
     normalized_cache_path = Path(cache_path)
     if _CACHE_LOADED and _CACHE_LOADED_FOR == normalized_cache_path:
         return _MEM_CACHE
 
-    if normalized_cache_path.exists():
-        try:
-            with normalized_cache_path.open("r", encoding="utf-8") as cache_file:
-                payload = json.load(cache_file)
-            if isinstance(payload, dict):
-                normalized_cache: dict[str, dict[str, str]] = {}
-                for lei, record in payload.items():
-                    normalized_lei = _normalize_lei(lei)
-                    if normalized_lei and isinstance(record, dict):
-                        normalized_cache[normalized_lei] = {
-                            key: _stringify(value) for key, value in record.items()
-                        }
-                _MEM_CACHE = normalized_cache
-        except (OSError, ValueError, TypeError) as exc:
-            LOGGER.warning("Failed to load LEI cache from %s: %s", normalized_cache_path, exc)
+    _MEM_CACHE = load_cache(normalized_cache_path)
 
     _CACHE_LOADED = True
     _CACHE_LOADED_FOR = normalized_cache_path
@@ -129,12 +123,7 @@ def _load_cache(cache_path: Path) -> dict[str, dict[str, str]]:
 
 
 def _save_cache(cache_path: Path) -> None:
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with cache_path.open("w", encoding="utf-8") as cache_file:
-            json.dump(_MEM_CACHE, cache_file, indent=2, sort_keys=True)
-    except OSError as exc:
-        LOGGER.warning("Failed to save LEI cache to %s: %s", cache_path, exc)
+    save_cache(cache_path, _MEM_CACHE)
 
 
 def _set_active_cache_path(cache_path: Path | str) -> Path:
@@ -179,9 +168,14 @@ def get_lei_record(lei: str) -> dict[str, str]:
 
     cache_path = _ACTIVE_CACHE_PATH
     cached_records = _load_cache(cache_path)
-    cached_record = cached_records.get(normalized_lei)
-    if cached_record is not None:
-        return {**_blank_record(), **cached_record}
+    cached_record = get_cached_result(
+        cached_records,
+        normalized_lei,
+        ttl_seconds=DEFAULT_CACHE_TTL_SECONDS,
+    )
+    if isinstance(cached_record, dict):
+        normalized_record = {key: _stringify(value) for key, value in cached_record.items()}
+        return {**_blank_record(), **normalized_record}
 
     url = f"{GLEIF_BASE_URL}/{normalized_lei}"
     LOGGER.info("GLEIF API request: %s", url)
@@ -195,7 +189,7 @@ def get_lei_record(lei: str) -> dict[str, str]:
         return _blank_record()
 
     record = _extract_record(payload, normalized_lei)
-    _MEM_CACHE[normalized_lei] = record
+    set_cached_result(_MEM_CACHE, normalized_lei, record)
     _save_cache(cache_path)
     return record
 
@@ -203,7 +197,7 @@ def get_lei_record(lei: str) -> dict[str, str]:
 def enrich_dataframe_with_lei(
     df: pd.DataFrame,
     *,
-    cache_path: Path | str = DEFAULT_CACHE_PATH,
+    cache_path: Path | str = LEI_CACHE_PATH,
     max_lookups: int = DEFAULT_MAX_LOOKUPS,
     sleep_seconds: float = DEFAULT_SLEEP_SECONDS,
     progress_callback: Callable[[int, int, str], None] | None = None,
@@ -267,7 +261,16 @@ def enrich_dataframe_with_lei(
         normalized_lei = _normalize_lei(lei_value)
         if not normalized_lei:
             return _blank_record()
-        return lei_records.get(normalized_lei, _MEM_CACHE.get(normalized_lei, _blank_record()))
+        if normalized_lei in lei_records:
+            return lei_records[normalized_lei]
+        cached_record = get_cached_result(
+            _MEM_CACHE,
+            normalized_lei,
+            ttl_seconds=DEFAULT_CACHE_TTL_SECONDS,
+        )
+        if isinstance(cached_record, dict):
+            return {**_blank_record(), **cached_record}
+        return _blank_record()
 
     record_series = enriched["lei"].map(_lookup_record)
     for column_name in _blank_record().keys():
