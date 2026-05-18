@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from src.config import load_settings
 from src.exporters import export_all
 from src.hmda_client import HmdaApiError, HmdaClient
+from src.lei_client import enrich_dataframe_with_lei
 from src.main import build_ranked_dataframe
 from src.utils import dataframe_to_csv_bytes, parse_state_list, to_download_name_prefix, top10_per_state
 
@@ -87,12 +88,12 @@ def _state_metric_cards(df: pd.DataFrame) -> None:
 
     st.subheader("Top 10 Summary Cards")
     cols = st.columns(min(4, len(top_state_rows)))
-    for idx, row in top_state_rows.iterrows():
+    for idx, row in enumerate(top_state_rows.itertuples(index=False)):
         col = cols[idx % len(cols)]
         col.metric(
-            label=f"{row['state']} top lender",
-            value=str(row["company_name"]),
-            delta=f"Score {row['dominance_score']}",
+            label=f"{row.state} top lender",
+            value=str(row.company_name),
+            delta=f"Score {row.dominance_score}",
         )
 
 
@@ -200,7 +201,8 @@ def _download_section(full_df: pd.DataFrame, settings_output_path: Path, year: i
             key=f"download-{state}",
         )
 
-    by_state_count = len(export_paths["by_state"])
+    by_state_paths = export_paths["by_state"]
+    by_state_count = len(by_state_paths) if isinstance(by_state_paths, list) else 1
     st.caption(
         "Saved exports to data/processed: "
         f"full, top10 summary, and {by_state_count} state files."
@@ -237,6 +239,19 @@ def main() -> None:
         max_value=1000,
         value=default_settings.min_originated_loans,
     )
+    enrich_company_names = st.sidebar.checkbox(
+        "Enrich company names from LEI",
+        value=False,
+        help="Query GLEIF LEI records to fill in company names and add LEI metadata.",
+    )
+    max_lei_lookups = st.sidebar.number_input(
+        "Max LEI lookups",
+        min_value=1,
+        max_value=5000,
+        value=250,
+        step=25,
+        help="Limit how many unique LEIs are queried in a single run.",
+    )
     sector_filter = st.sidebar.selectbox(
         "Sector filter",
         options=["All", "FHA", "VA", "Conventional"],
@@ -253,6 +268,11 @@ def main() -> None:
         "Identify high-volume mortgage companies by state using public HMDA/CFPB data. "
         "This dashboard is designed for lightweight internal analysis and export workflows."
     )
+
+    if enrich_company_names:
+        st.warning(
+            "LEI enrichment can take longer on large datasets because the app queries GLEIF for each unique LEI."
+        )
 
     run_clicked = st.button("Run analysis", type="primary")
     if not run_clicked:
@@ -277,6 +297,32 @@ def main() -> None:
                 uploaded_file=uploaded_file,
             )
             ranked_df = build_ranked_dataframe(raw_df=raw_df, settings=runtime_settings)
+
+            if enrich_company_names:
+                progress_placeholder = st.empty()
+                progress_bar = st.progress(0)
+
+                def _update_enrichment_progress(current: int, total: int, lei_value: str) -> None:
+                    if total <= 0:
+                        progress_bar.progress(0)
+                        progress_placeholder.info("Preparing LEI enrichment...")
+                        return
+
+                    progress_value = min(current / total, 1.0)
+                    progress_bar.progress(progress_value)
+                    progress_placeholder.info(
+                        f"Enriching LEI {current} of {total}: {lei_value}"
+                    )
+
+                ranked_df = enrich_dataframe_with_lei(
+                    ranked_df,
+                    max_lookups=int(max_lei_lookups),
+                    cache_path=Path("data/processed/lei_cache.json"),
+                    progress_callback=_update_enrichment_progress,
+                )
+                progress_bar.progress(1.0)
+                progress_placeholder.success("LEI enrichment complete.")
+
             filtered_ranked_df = _apply_sector_filter(ranked_df, sector_filter)
 
         st.success(f"Analysis complete using source: {source_label}")

@@ -12,11 +12,41 @@ This tool helps non-technical users quickly:
 - rank lenders by originated production volume
 - exclude states where your business is already licensed
 - review top lenders per state in a web dashboard
+- enrich company names and LEI metadata from GLEIF when HMDA rows include an LEI
 - export clean CSV files for downstream workflows
 
 ## Why HMDA Is Used
 
 HMDA data is public, regulator-backed, and structured for consistent analysis. It offers repeatable lender-level loan production signals (volume, count, purchase mix, FHA mix) without relying on brittle web scraping.
+
+## LEI Enrichment
+
+When HMDA rows include an `lei`, the app can query the GLEIF LEI registry and enrich the dashboard with company metadata.
+
+GLEIF is a public, open LEI reference source. This helps improve HMDA rows where the lender name is missing, blank, or shown as `unknown`.
+
+The enrichment adds:
+
+- `gleif_legal_name`
+- `gleif_entity_status`
+- `gleif_registration_status`
+- `gleif_jurisdiction`
+- `gleif_legal_address`
+- `gleif_headquarters_address`
+- `gleif_last_update`
+- `gleif_next_renewal_date`
+- `gleif_managing_lou`
+
+If `company_name` is blank, null, or `unknown`, the app replaces it with `gleif_legal_name` and preserves the original value in `original_company_name`.
+
+The enrichment is rate-limit friendly:
+
+- deduplicates LEIs before querying
+- checks a local cache first
+- saves successful lookups to `data/processed/lei_cache.json`
+- uses a 15 second timeout
+- pauses briefly between uncached calls
+- limits lookups with the sidebar control
 
 ## Why This Avoids Paid Ranking Subscriptions
 
@@ -51,6 +81,7 @@ mortgage-broker-intelligence/
   src/
     config.py
     hmda_client.py
+    lei_client.py
     transform.py
     scoring.py
     exporters.py
@@ -106,6 +137,8 @@ streamlit run app.py
   - target states
   - exclude licensed states
   - minimum originated loans
+  - optional LEI enrichment
+  - max LEI lookups
   - source mode (API or Upload CSV)
 - Main area:
   - run analysis button
@@ -113,6 +146,7 @@ streamlit run app.py
   - sortable full dataset
   - summary cards
   - charts for volume, FHA-heavy, and purchase-heavy lenders
+  - LEI and company lookup with clickable LEI links to GLEIF
   - downloadable CSV outputs
 
 ## HMDA API Usage
@@ -136,6 +170,19 @@ Implementation includes:
 - defensive API error handling
 
 CSV download mode uses actions_taken=1 for originated loans and saves raw files to data/raw.
+
+## GLEIF LEI API Usage
+
+Base URL:
+
+- https://api.gleif.org/api/v1/lei-records/{lei}
+
+Implemented in src/lei_client.py:
+
+- get_lei_record(lei)
+- enrich_dataframe_with_lei(df)
+
+The client uses a local JSON cache at `data/processed/lei_cache.json` to avoid repeated calls during a run and across future runs.
 
 ## CLI Support
 
