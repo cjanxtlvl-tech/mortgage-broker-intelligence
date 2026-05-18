@@ -221,9 +221,23 @@ def enrich_dataframe_with_lei(
     if "original_company_name" not in enriched.columns:
         enriched["original_company_name"] = enriched.get("company_name", "")
 
+    company_name_series = (
+        enriched["company_name"].fillna("").astype(str).str.strip()
+        if "company_name" in enriched.columns
+        else pd.Series([""] * len(enriched), index=enriched.index)
+    )
+    unknown_company_mask = company_name_series.str.lower().isin(
+        {"", "unknown", "none", "null", "nan"}
+    ) | company_name_series.str.lower().str.contains("unknown", na=False)
+
+    unknown_first_df = pd.concat(
+        [enriched.loc[unknown_company_mask], enriched.loc[~unknown_company_mask]],
+        axis=0,
+    )
+
     unique_leis = []
     seen_leis: set[str] = set()
-    for lei_value in enriched["lei"].astype(str):
+    for lei_value in unknown_first_df["lei"].astype(str):
         normalized_lei = _normalize_lei(lei_value)
         if normalized_lei and normalized_lei not in seen_leis:
             seen_leis.add(normalized_lei)
@@ -259,11 +273,6 @@ def enrich_dataframe_with_lei(
     for column_name in _blank_record().keys():
         enriched[column_name] = record_series.map(lambda record, name=column_name: record.get(name, ""))
 
-    company_name_series = (
-        enriched["company_name"].fillna("").astype(str).str.strip()
-        if "company_name" in enriched.columns
-        else pd.Series([""] * len(enriched), index=enriched.index)
-    )
     empty_company_mask = company_name_series.str.lower().isin(
         {"", "unknown", "none", "null", "nan"}
     ) | company_name_series.str.lower().str.contains("unknown", na=False)
