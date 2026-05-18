@@ -261,7 +261,7 @@ def main() -> None:
     )
     enrich_company_names = st.sidebar.checkbox(
         "Enrich company names from LEI",
-        value=False,
+        value=True,
         help="Query GLEIF LEI records to fill in company names and add LEI metadata.",
     )
     max_lei_lookups = st.sidebar.number_input(
