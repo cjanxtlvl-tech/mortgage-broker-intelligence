@@ -468,7 +468,7 @@ def main() -> None:
         # Always show broker/lender filter, but disable options if not available
         broker_lender_options = ["All", "Probable Broker Only", "Probable Lender Only"]
         broker_lender_disabled = not (enable_broker_lender_classification and "classification_label" in filtered_ranked_df.columns)
-        broker_lender_filter = st.radio(
+        broker_lender_filter = st.sidebar.radio(
             "Show:",
             options=broker_lender_options,
             index=0,
