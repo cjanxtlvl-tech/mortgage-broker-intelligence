@@ -165,6 +165,13 @@ def _lookup_matches(
     return matched.reset_index(drop=True)
 
 
+def _lei_record_url(lei_value: str) -> str:
+    lei = str(lei_value).strip().upper()
+    if not lei:
+        return ""
+    return f"https://search.gleif.org/#/record/{lei}"
+
+
 def _download_section(full_df: pd.DataFrame, settings_output_path: Path, year: int, states: list[str]) -> None:
     export_paths = export_all(full_df, settings_output_path)
     top10_df = top10_per_state(full_df)
@@ -299,10 +306,33 @@ def main() -> None:
                 company_lookup,
                 exact_lei_match,
             )
+
+            lookup_display_df = lookup_df.copy()
+            lookup_display_df["lei_lookup_url"] = lookup_display_df["lei"].map(_lei_record_url)
             st.caption(f"Lookup matches: {len(lookup_df)}")
             st.dataframe(
-                lookup_df[["state", "company_name", "lei", "total_originated_loans", "dominance_score"]],
+                lookup_display_df[
+                    [
+                        "state",
+                        "company_name",
+                        "lei_lookup_url",
+                        "total_originated_loans",
+                        "dominance_score",
+                    ]
+                ],
                 use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "state": "State",
+                    "company_name": "Company",
+                    "lei_lookup_url": st.column_config.LinkColumn(
+                        "LEI",
+                        help="Click to open LEI record in GLEIF",
+                        display_text=r".*/record/(.*)$",
+                    ),
+                    "total_originated_loans": "Originated Loans",
+                    "dominance_score": "Dominance Score",
+                },
             )
 
         top10_df = top10_per_state(filtered_ranked_df)
