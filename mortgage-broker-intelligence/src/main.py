@@ -5,6 +5,7 @@ import logging
 import pandas as pd
 
 from src.config import Settings, load_settings
+from src.classifier import classify_dataframe
 from src.exporters import export_all
 from src.hmda_client import HmdaClient
 from src.scoring import add_company_type_guess, add_dominance_score
@@ -35,6 +36,13 @@ OUTPUT_COLUMNS = [
     "notes",
 ]
 
+CLASSIFICATION_COLUMNS = [
+    "company_category",
+    "broker_probability_score",
+    "confidence_score",
+    "classification_reasons",
+]
+
 
 def _configure_logging() -> None:
     logging.basicConfig(
@@ -52,7 +60,19 @@ def _attach_placeholder_enrichment_fields(df: pd.DataFrame) -> pd.DataFrame:
     return enriched
 
 
-def build_ranked_dataframe(raw_df: pd.DataFrame, settings: Settings) -> pd.DataFrame:
+def _output_columns(include_classification: bool) -> list[str]:
+    columns = OUTPUT_COLUMNS.copy()
+    if include_classification:
+        columns.extend(CLASSIFICATION_COLUMNS)
+    return columns
+
+
+def build_ranked_dataframe(
+    raw_df: pd.DataFrame,
+    settings: Settings,
+    *,
+    enable_broker_lender_classification: bool = False,
+) -> pd.DataFrame:
     standardized_df = prepare_hmda_columns(raw_df)
     originated_df = filter_originated_loans(standardized_df)
     metrics_df = build_company_metrics(originated_df)
@@ -69,8 +89,10 @@ def build_ranked_dataframe(raw_df: pd.DataFrame, settings: Settings) -> pd.DataF
 
     scored_df = add_dominance_score(filtered_df)
     classified_df = add_company_type_guess(scored_df)
+    if enable_broker_lender_classification:
+        classified_df = classify_dataframe(classified_df)
     output_df = _attach_placeholder_enrichment_fields(classified_df)
-    output_df = output_df[OUTPUT_COLUMNS].copy()
+    output_df = output_df[_output_columns(enable_broker_lender_classification)].copy()
     output_df = output_df.sort_values(
         by=["state", "dominance_score", "total_originated_loans"],
         ascending=[True, False, False],

@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from streamlit.errors import StreamlitSecretNotFoundError
 
 from src.config import load_settings
+from src.classifier import classify_dataframe
 from src.exporters import export_all
 from src.hmda_client import HmdaApiError, HmdaClient
 from src.lei_client import enrich_dataframe_with_lei, get_lei_record
@@ -316,6 +317,11 @@ def main() -> None:
         value=True,
         help="Query GLEIF LEI records to fill in company names and add LEI metadata.",
     )
+    enable_broker_lender_classification = st.sidebar.checkbox(
+        "Enable broker/lender classification",
+        value=False,
+        help="Add lightweight heuristic broker-vs-lender labels and scores.",
+    )
     max_lei_lookups = st.sidebar.number_input(
         "Max LEI lookups",
         min_value=1,
@@ -433,6 +439,9 @@ def main() -> None:
                         f"Unique LEIs in run: {total_unique_leis}; Max LEI lookups: {int(max_lei_lookups)}. "
                         "Increase Max LEI lookups to enrich more results."
                     )
+
+            if enable_broker_lender_classification:
+                ranked_df = classify_dataframe(ranked_df)
 
             filtered_ranked_df = _apply_sector_filter(ranked_df, sector_filter)
 
