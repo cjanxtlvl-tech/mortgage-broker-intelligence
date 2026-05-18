@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hmac
 import logging
+import os
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import streamlit as st
+from dotenv import load_dotenv
 
 from src.config import load_settings
 from src.exporters import export_all
@@ -23,9 +25,17 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _check_password() -> bool:
-    app_password = st.secrets.get("APP_PASSWORD")
+    load_dotenv()
+
+    # Prefer Streamlit secrets (Cloud/local secrets.toml), fallback to .env for local dev.
+    app_password_raw = st.secrets.get("APP_PASSWORD") or os.getenv("APP_PASSWORD")
+    app_password = str(app_password_raw) if app_password_raw else ""
     if not app_password:
-        st.error("APP_PASSWORD is not configured in Streamlit secrets.")
+        st.error(
+            "APP_PASSWORD is not configured. Set it in Streamlit Cloud Secrets as\n"
+            'APP_PASSWORD = "change-me-now-2026"\n'
+            "or set APP_PASSWORD in your local .env file."
+        )
         st.stop()
 
     if st.session_state.get("authenticated"):
