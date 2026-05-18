@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -147,7 +147,11 @@ def classify_company(record: dict) -> dict:
     }
 
 
-def classify_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+def classify_dataframe(
+    df: pd.DataFrame,
+    *,
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> pd.DataFrame:
     if df.empty:
         enriched = df.copy()
         enriched["company_category"] = ""
@@ -157,11 +161,14 @@ def classify_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         return enriched
 
     enriched = df.copy()
-    classification_rows = enriched.apply(
-        lambda row: classify_company(row.to_dict()),
-        axis=1,
-        result_type="expand",
-    )
+    classification_results: list[dict[str, Any]] = []
+    total_rows = len(enriched)
+    for index, (_, row) in enumerate(enriched.iterrows(), start=1):
+        classification_results.append(classify_company(row.to_dict()))
+        if progress_callback is not None:
+            progress_callback(index, total_rows)
+
+    classification_rows = pd.DataFrame(classification_results, index=enriched.index)
 
     for column_name in [
         "company_category",

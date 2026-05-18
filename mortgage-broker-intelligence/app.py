@@ -441,7 +441,27 @@ def main() -> None:
                     )
 
             if enable_broker_lender_classification:
-                ranked_df = classify_dataframe(ranked_df)
+                classification_placeholder = st.empty()
+                classification_bar = st.progress(0)
+
+                def _update_classification_progress(current: int, total: int) -> None:
+                    if total <= 0:
+                        classification_bar.progress(0)
+                        classification_placeholder.info("Preparing broker/lender classification...")
+                        return
+
+                    progress_value = min(current / total, 1.0)
+                    classification_bar.progress(progress_value)
+                    classification_placeholder.info(
+                        f"Classifying company {current} of {total}"
+                    )
+
+                ranked_df = classify_dataframe(
+                    ranked_df,
+                    progress_callback=_update_classification_progress,
+                )
+                classification_bar.progress(1.0)
+                classification_placeholder.success("Broker/lender classification complete.")
 
             filtered_ranked_df = _apply_sector_filter(ranked_df, sector_filter)
 
