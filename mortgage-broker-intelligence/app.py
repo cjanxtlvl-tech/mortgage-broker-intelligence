@@ -378,7 +378,23 @@ def main() -> None:
             )
             ranked_df = build_ranked_dataframe(raw_df=raw_df, settings=runtime_settings)
 
+            unknown_with_lei_before = 0
+            total_unique_leis = 0
+
             if enrich_company_names:
+                company_series_before = (
+                    ranked_df["company_name"].fillna("").astype(str).str.strip()
+                    if "company_name" in ranked_df.columns
+                    else pd.Series([""] * len(ranked_df), index=ranked_df.index)
+                )
+                unknown_company_before = company_series_before.str.lower().isin(
+                    {"", "unknown", "none", "null", "nan"}
+                ) | company_series_before.str.lower().str.contains("unknown", na=False)
+                lei_series_before = ranked_df["lei"].fillna("").astype(str).str.strip().str.upper()
+                has_lei_before = lei_series_before.ne("")
+                unknown_with_lei_before = int((unknown_company_before & has_lei_before).sum())
+                total_unique_leis = int(lei_series_before[has_lei_before].nunique())
+
                 progress_placeholder = st.empty()
                 progress_bar = st.progress(0)
 
@@ -402,6 +418,21 @@ def main() -> None:
                 )
                 progress_bar.progress(1.0)
                 progress_placeholder.success("LEI enrichment complete.")
+
+                company_series_after = ranked_df["company_name"].fillna("").astype(str).str.strip()
+                unknown_company_after = company_series_after.str.lower().isin(
+                    {"", "unknown", "none", "null", "nan"}
+                ) | company_series_after.str.lower().str.contains("unknown", na=False)
+                lei_series_after = ranked_df["lei"].fillna("").astype(str).str.strip().str.upper()
+                unknown_with_lei_after = int((unknown_company_after & lei_series_after.ne("")).sum())
+
+                if total_unique_leis > int(max_lei_lookups) and unknown_with_lei_after > 0:
+                    st.warning(
+                        "Some companies remain unknown because the LEI lookup cap was reached. "
+                        f"Unknown rows with LEI before/after enrichment: {unknown_with_lei_before} -> {unknown_with_lei_after}. "
+                        f"Unique LEIs in run: {total_unique_leis}; Max LEI lookups: {int(max_lei_lookups)}. "
+                        "Increase Max LEI lookups to enrich more results."
+                    )
 
             filtered_ranked_df = _apply_sector_filter(ranked_df, sector_filter)
 
