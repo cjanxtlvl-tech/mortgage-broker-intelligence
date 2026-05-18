@@ -122,6 +122,40 @@ def _charts(df: pd.DataFrame) -> None:
     st.bar_chart(purchase_chart_df)
 
 
+def _apply_sector_filter(df: pd.DataFrame, selected_sector: str) -> pd.DataFrame:
+    if selected_sector == "All":
+        return df
+
+    sector_to_column = {
+        "FHA": "fha_loan_count",
+        "VA": "va_loan_count",
+        "Conventional": "conventional_loan_count",
+    }
+    column_name = sector_to_column.get(selected_sector)
+    if not column_name or column_name not in df.columns:
+        return df
+
+    return df[df[column_name] > 0].reset_index(drop=True)
+
+
+def _lookup_matches(df: pd.DataFrame, lei_query: str, company_query: str) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    matched = df.copy()
+    if lei_query.strip():
+        lei_mask = matched["lei"].astype(str).str.contains(lei_query.strip(), case=False, na=False)
+        matched = matched[lei_mask]
+
+    if company_query.strip():
+        company_mask = matched["company_name"].astype(str).str.contains(
+            company_query.strip(), case=False, na=False
+        )
+        matched = matched[company_mask]
+
+    return matched.reset_index(drop=True)
+
+
 def _download_section(full_df: pd.DataFrame, settings_output_path: Path, year: int, states: list[str]) -> None:
     export_paths = export_all(full_df, settings_output_path)
     top10_df = top10_per_state(full_df)
@@ -187,6 +221,12 @@ def main() -> None:
         max_value=1000,
         value=default_settings.min_originated_loans,
     )
+    sector_filter = st.sidebar.selectbox(
+        "Sector filter",
+        options=["All", "FHA", "VA", "Conventional"],
+        index=0,
+        help="Filter lenders by whether they originated loans in the selected sector.",
+    )
     source_mode = st.sidebar.selectbox("Source mode", options=["API", "Upload CSV"])
     uploaded_file = None
     if source_mode == "Upload CSV":
@@ -221,23 +261,46 @@ def main() -> None:
                 uploaded_file=uploaded_file,
             )
             ranked_df = build_ranked_dataframe(raw_df=raw_df, settings=runtime_settings)
+            filtered_ranked_df = _apply_sector_filter(ranked_df, sector_filter)
 
         st.success(f"Analysis complete using source: {source_label}")
+        if sector_filter != "All":
+            st.info(f"Applied sector filter: {sector_filter}")
         st.write(
-            f"Ranked {len(ranked_df)} companies across {ranked_df['state'].nunique() if not ranked_df.empty else 0} states."
+            f"Ranked {len(filtered_ranked_df)} companies across "
+            f"{filtered_ranked_df['state'].nunique() if not filtered_ranked_df.empty else 0} states."
         )
 
-        top10_df = top10_per_state(ranked_df)
+        if filtered_ranked_df.empty:
+            st.warning("No companies match the current filters. Try a different sector or lower minimum loans.")
+            return
+
+        st.subheader("LEI and Company Lookup")
+        lookup_col_1, lookup_col_2 = st.columns(2)
+        lei_lookup = lookup_col_1.text_input("Find by LEI", value="", placeholder="e.g., 549300... ")
+        company_lookup = lookup_col_2.text_input(
+            "Find by Company Name", value="", placeholder="e.g., Rocket Mortgage"
+        )
+
+        if lei_lookup.strip() or company_lookup.strip():
+            lookup_df = _lookup_matches(filtered_ranked_df, lei_lookup, company_lookup)
+            st.caption(f"Lookup matches: {len(lookup_df)}")
+            st.dataframe(
+                lookup_df[["state", "company_name", "lei", "total_originated_loans", "dominance_score"]],
+                use_container_width=True,
+            )
+
+        top10_df = top10_per_state(filtered_ranked_df)
         st.subheader("Top Mortgage Companies By State")
         st.dataframe(top10_df, use_container_width=True)
 
         st.subheader("Full Ranked Output")
-        st.dataframe(ranked_df, use_container_width=True)
+        st.dataframe(filtered_ranked_df, use_container_width=True)
 
-        _state_metric_cards(ranked_df)
-        _charts(ranked_df)
+        _state_metric_cards(filtered_ranked_df)
+        _charts(filtered_ranked_df)
         _download_section(
-            full_df=ranked_df,
+            full_df=filtered_ranked_df,
             settings_output_path=runtime_settings.output_path,
             year=int(selected_year),
             states=target_states,
