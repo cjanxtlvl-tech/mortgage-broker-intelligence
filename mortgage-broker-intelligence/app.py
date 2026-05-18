@@ -15,7 +15,7 @@ from streamlit.errors import StreamlitSecretNotFoundError
 from src.config import load_settings
 from src.exporters import export_all
 from src.hmda_client import HmdaApiError, HmdaClient
-from src.lei_client import enrich_dataframe_with_lei
+from src.lei_client import enrich_dataframe_with_lei, get_lei_record
 from src.main import build_ranked_dataframe
 from src.utils import dataframe_to_csv_bytes, parse_state_list, to_download_name_prefix, top10_per_state
 
@@ -197,6 +197,54 @@ def _company_info_columns() -> list[str]:
     ]
 
 
+def _ensure_company_info_columns(df: pd.DataFrame) -> pd.DataFrame:
+    enriched = df.copy()
+    for column_name in _company_info_columns():
+        if column_name not in enriched.columns:
+            enriched[column_name] = ""
+    return enriched
+
+
+def _force_enrich_lookup_matches(df: pd.DataFrame, *, max_forced_lookups: int = 25) -> pd.DataFrame:
+    if df.empty or "lei" not in df.columns:
+        return df
+
+    forced = _ensure_company_info_columns(df)
+
+    normalized_leis = (
+        forced["lei"].fillna("").astype(str).str.strip().str.upper().replace("", pd.NA).dropna().unique().tolist()
+    )
+    if not normalized_leis:
+        return forced
+
+    for lei_value in normalized_leis[:max_forced_lookups]:
+        record = get_lei_record(lei_value)
+        if not any(record.values()):
+            continue
+
+        lei_mask = forced["lei"].fillna("").astype(str).str.strip().str.upper() == lei_value
+        for column_name, value in record.items():
+            if not value:
+                continue
+            existing_values = pd.Series(forced.loc[lei_mask, column_name]).fillna("").astype(str).str.strip()
+            replaceable_value_mask = existing_values.str.lower().isin({"", "unknown", "none", "null", "nan"})
+            if replaceable_value_mask.any():
+                forced.loc[existing_values[replaceable_value_mask].index, column_name] = value
+
+        gleif_legal_name = record.get("gleif_legal_name", "").strip()
+        if gleif_legal_name:
+            existing_company_names = (
+                pd.Series(forced.loc[lei_mask, "company_name"]).fillna("").astype(str).str.strip()
+            )
+            unknown_name_mask = existing_company_names.str.lower().isin(
+                {"", "unknown", "none", "null", "nan"}
+            ) | existing_company_names.str.lower().str.contains("unknown", na=False)
+            if unknown_name_mask.any():
+                forced.loc[existing_company_names[unknown_name_mask].index, "company_name"] = gleif_legal_name
+
+    return forced
+
+
 def _download_section(full_df: pd.DataFrame, settings_output_path: Path, year: int, states: list[str]) -> None:
     export_paths = export_all(full_df, settings_output_path)
     top10_df = top10_per_state(full_df)
@@ -275,6 +323,14 @@ def main() -> None:
         value=250,
         step=25,
         help="Limit how many unique LEIs are queried in a single run.",
+    )
+    lookup_force_lei_lookups = st.sidebar.number_input(
+        "Max forced LEI lookups (search)",
+        min_value=1,
+        max_value=500,
+        value=25,
+        step=5,
+        help="When using LEI/company search, force-refresh up to this many matched LEIs from GLEIF.",
     )
     sector_filter = st.sidebar.selectbox(
         "Sector filter",
@@ -377,8 +433,15 @@ def main() -> None:
                 exact_lei_match,
             )
 
+            if enrich_company_names:
+                lookup_df = _force_enrich_lookup_matches(
+                    lookup_df,
+                    max_forced_lookups=int(lookup_force_lei_lookups),
+                )
+
             lookup_display_df = lookup_df.copy()
             lookup_display_df["lei_lookup_url"] = lookup_display_df["lei"].map(_lei_record_url)
+            lookup_display_df = _ensure_company_info_columns(lookup_display_df)
             st.caption(f"Lookup matches: {len(lookup_df)}")
             if enrich_company_names:
                 st.markdown("**Company info**")

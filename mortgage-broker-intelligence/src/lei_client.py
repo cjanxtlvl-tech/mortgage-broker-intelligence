@@ -264,7 +264,9 @@ def enrich_dataframe_with_lei(
         if "company_name" in enriched.columns
         else pd.Series([""] * len(enriched), index=enriched.index)
     )
-    empty_company_mask = company_name_series.str.lower().isin({"", "unknown", "none", "null", "nan"})
+    empty_company_mask = company_name_series.str.lower().isin(
+        {"", "unknown", "none", "null", "nan"}
+    ) | company_name_series.str.lower().str.contains("unknown", na=False)
     gleif_name_series = enriched["gleif_legal_name"].fillna("").astype(str).str.strip()
     replace_mask = empty_company_mask & gleif_name_series.ne("")
     enriched.loc[replace_mask, "company_name"] = gleif_name_series[replace_mask]
